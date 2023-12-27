@@ -1,0 +1,320 @@
+
+
+user_input=True
+while user_input:
+    inf=input("Please enter the file name: ") #This code wants to input the file name that will be used for further analysis.
+    #Read file
+    f=open(inf, 'r') #Opening and reading file
+    #import packages pandas,numpy, seaborn, matplotlib.pyplot, pairwise_tukeyhsd and annotator
+    import pandas as pd
+    import numpy as np
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from statsmodels.stats.multicomp import pairwise_tukeyhsd
+    from statannotations.Annotator import Annotator
+    
+    
+    data=pd.read_csv(f, sep=',', header=None) #Reading file as pandas DataFrame. The header is kept none because while reading pandas renamed the duplicate columns however, I wanted duplicate columns as it is so that I can combine them for mean calculation and other analysis.
+    data.columns = data.iloc[0] # replace column with first row
+    data = data.drop(0)  # remove the first row
+    First_row_column_shell=input("Please enter the name of label for your genes column: ")#This input requires user to put name of first row_column shell as this information will be used in analysis. 
+    
+    gene_category=input("Please enter the column header name for gene cateogry in your data: ") 
+    
+    data.set_index([First_row_column_shell, gene_category], inplace=True)#For convenience, we are setting the first_row_column_shell and gene category as an index and the change is updated in current data
+    
+    data = data.astype(float)#During conversion of first rows to column, the data got converted to string. Hence, this code changes data back to float.
+    
+    ##input reference gene
+    reference_gene=input("Please enter the name given for reference gene (or housekeeping gene in your data."+"\n"+"This should be name as internal_control or refetence or HKG, etc. and should be in column named for gene category."+"\n"+"Please enter the name for reference gene here: ")
+    
+    #input control name
+    control_name=input("Please enter the name of control sample: ")
+    
+    #User are being asked to provide the ct_cutoff value above which the gene will be considered as being absent (NaN)
+    ct_cutoff_absent=input("Please enter the ct cutoff calue above which it will be considered as absent: ")
+    ct_cutoff_lower_limit=input("Do you have any lower limit values for ct (e.g. 1) below which it will be considered as absent? If yes type the value if no then type 'n': ")
+    if ct_cutoff_lower_limit!="n":
+        ct_cutoff_lower_limit_value=float(ct_cutoff_lower_limit)
+        updated_data_low_ct_cutoff=data.apply((lambda x: np.where(x<ct_cutoff_lower_limit_value, np.nan,x)))
+    else:
+        updated_data_low_ct_cutoff=data
+        
+
+    #Changing the input value to float
+    float_ct_cutoff_absent=float(ct_cutoff_absent)
+    
+    ####Data clean up    
+    #Values above ct cutoff value are replaced with NaN
+    updated_data=updated_data_low_ct_cutoff.apply(lambda x: np.where(x>float_ct_cutoff_absent, np.nan,x))
+    
+    
+    
+    #Now, for each row(gene) the NaN are filled with mean ct values for same treatment group
+    updated_data_fillna = updated_data.groupby(by=updated_data.columns, axis=1, sort=False).transform(lambda x: x.fillna(x.mean()))
+    
+    #After filling the NaN with mean values, there may be still some NaN in case all of the values are NaN for particuar sample for particlular gene.
+    ###In this case, the data with NaN for control samples are being removed because if ct value for control are 0 then we have no baseline to compare gene regulation for treatment groups
+    updated_data_fillna.dropna(how='any', axis=0, subset=control_name, inplace=True)
+    
+    #For convenience to select data in downstream analysis, indexed are being reset
+    updated_data_fillna_reset_index=updated_data_fillna.reset_index()
+    
+    ##At first we will work on data with no nan values. In the later analysis, we will see if there are any NaN values for treatment groups as this will indicate gene being shutdown by treatment
+    ##selecting data with no nan values    
+    new_data_without_na_1=updated_data_fillna.dropna()
+    
+    new_data_without_na_1_reset_index=new_data_without_na_1.reset_index()
+    
+    #Reference genes are selected to get their mean and then that mean will be subtracted from data to get dct (target gene (ct)- reference gene (ct))
+    
+    reference_gene_only_1=new_data_without_na_1_reset_index[new_data_without_na_1_reset_index[gene_category]==reference_gene]
+    
+    reference_gene_only_1.set_index([First_row_column_shell, gene_category], inplace=True)
+    
+    #Calulate mean ct for reference gene for each sample
+    mean_ct_reference_gene=reference_gene_only_1.mean(axis=0)
+    
+    #subtract mean ct reference gene from data to get dct for each treatment
+    dct1=new_data_without_na_1-mean_ct_reference_gene
+    
+    #mean ct is caluclated for each treatment by grouping them and calculating mean
+    mean_dct=dct1.groupby(by=dct1.columns, axis=1, sort=False).mean()
+    
+    #data containing mean ct for control only is selected to subtract it from data to determine ddct
+    mean_dct_control=mean_dct[control_name]
+    
+    #ddct is determined by subtracting control mean dct from whole dct data 
+    ddct1=dct1.subtract(mean_dct_control, axis=0)
+    
+    #Fold change is determined by using formula: foldchange=2**-(ddct)
+    foldchange=2**(-ddct1)
+    
+    #Copying foldchange data to work on regulation. The foldchange(fc) is considered upregulated if the fc>1 and downregulated if fc<1. 
+    # However, for downregulation the value are conjusted between 0 to 1. So these values for downregulation are changed to regulation by using formula: regulation=-1/foldchange (if foldchange <1).
+    regulation=foldchange.copy(deep=True)
+    
+    #replacing foldchange<1 with -1/foldchange
+    updated_regulation=regulation.apply(lambda x: np.where(x<1, -1/x,x))
+    
+    ## Transfer data on regulation to a csv file
+    csv_file_input=input("Please type 'yes' if you want to transfer the data on regulation of gene expression to a csv file: ")   
+    if csv_file_input=='yes':
+        csv_file_name=input("Please type the name of file you want to create in .csv format: ")
+        updated_regulation.to_csv(csv_file_name)
+    print("This file contain data for only those without missing values and with Ct values lesser that higher ct cut off and higher than lower ct cut off.")
+        
+        
+        ####
+    
+    updated_regulation_reset_index=updated_regulation.reset_index()
+    updated_regulation_gene_indexed=updated_regulation_reset_index.set_index(First_row_column_shell)
+
+    
+    gene_list=list(updated_regulation_reset_index[First_row_column_shell].unique())
+
+    
+    
+    ###Making heat map for data
+    title_heatmap=input("Please enter title for heat map: ")
+    
+    x_label=input("Please enter x label for heat map: ")
+    
+    y_label=input("Please enter y label for heat map: ")
+    
+    ax_hm = plt.axes()
+    
+    heat_map_regulation=sns.heatmap(data=updated_regulation, ax=ax_hm, cbar_kws={'label': 'Regulation'}, cmap = "RdBu_r", yticklabels=gene_list)
+    
+    
+    ax_hm.set_title(title_heatmap, fontsize = 20)
+    
+    ax_hm.set(xlabel=x_label, ylabel=y_label)
+    plt.show()
+    
+    
+    
+    #Heat map for mean regulation
+    ddct_mean=mean_dct.subtract(mean_dct[control_name], axis=0)
+    
+    foldchange_mean=2**(-ddct_mean)
+    
+    regulation_mean=foldchange_mean.copy(deep=True)
+    
+    updated_regulation_mean=regulation_mean.apply(lambda x: np.where(x<1, -1/x,x))
+    
+    
+        
+
+
+    ax2 = plt.axes()
+    
+    heat_map_regulation_mean=sns.heatmap(data=updated_regulation_mean, ax=ax2, cbar_kws={'label': 'Regulation'}, cmap = "RdBu_r", yticklabels=gene_list)
+    
+    ax2.set_title(title_heatmap, fontsize = 20)
+    
+    ax2.set(xlabel=x_label, ylabel=y_label)
+    plt.show()
+    
+    
+    ##### barchar for all data
+    title_barchart=input("Please enter title for the barchart: ")
+    
+    x_label_barchart=input("Please enter x label for the barchart: ")
+    
+    y_label_barchart=input("Please enter y label for the barchart: ")
+    
+    updated_regulation_melt=updated_regulation.melt(ignore_index = False, var_name="variable", value_name="value")
+    
+    updated_regulation_melt_reset_index=updated_regulation_melt.reset_index()
+    
+    sns_barplot_regulation=sns.barplot(data=updated_regulation_melt_reset_index, x=First_row_column_shell, y="value", hue="variable", ci="sd", edgecolor="white", capsize=0.1, errcolor = 'black', errwidth=0.8 )
+    
+    plt.legend(title='')
+    plt.title(title_barchart)
+    plt.xticks(rotation=90)
+    plt.xlabel(x_label_barchart)
+    plt.ylabel(y_label_barchart)
+    plt.show()
+    
+    
+    
+
+    
+    ###In case user want to create barchart and heatmap for different gene category
+    different_category_graphs=input("Please type 'yes' if you want to make barchart and heatmap for different gene category: ")
+    if different_category_graphs=="yes":
+        
+        # while loop will be used to select different categories and make graphs for each them.
+        # Here, list of each unique gene category is being made
+        list_gene_category=list(updated_regulation_melt_reset_index[gene_category].unique())
+        
+        #However, reference gene is being removed because that will not be our gene of interest
+        list_gene_category.remove(reference_gene)
+        #print(list_gene_category)
+        
+        # A while loop to generate barchart for each gene category for data updated_regulation_melt_reset_index
+        i_gene_category=0
+        item_gene_category=len(list_gene_category)
+        while i_gene_category<item_gene_category:
+            
+            p_values_tukey=[]
+            significant_tukey_pairs_list=[]
+            ax_bp=plt.axes()
+            
+            data_subcategory = updated_regulation_melt_reset_index[updated_regulation_melt_reset_index[gene_category] == list_gene_category[i_gene_category]]
+            
+            data_subcategory_copied=data_subcategory.copy(deep=True)
+
+            
+            #print("data_subcategory 1: ",data_subcategory)
+            
+            gene_list=list(data_subcategory[First_row_column_shell].unique())
+            #print(gene_list)
+            for gene, data_subcategory in data_subcategory.groupby(by=First_row_column_shell, sort=False):
+
+                index_gene=0
+                item_gene=len(gene_list)
+                #print("Total gene length is: ",item_gene)
+                while index_gene<item_gene:
+                        
+                        if gene==gene_list[index_gene]:
+                            tukey=pairwise_tukeyhsd(data_subcategory["value"], data_subcategory["variable"])
+                            tukey_summary=tukey.summary()
+                            tukey_df = pd.DataFrame(data=tukey_summary.data[1:], columns=tukey_summary.data[0])
+                            significant_tukey=tukey_df[tukey_df["p-adj"]<=0.05]
+                            for p_values in significant_tukey["p-adj"]:
+                                if p_values<=0.05:
+                                    p_values_tukey.append(p_values)
+                                    
+                            #print(significant_tukey)
+                                    
+                            i_sig_pairs=0
+                            item_len_sig_pairs=len(significant_tukey['group1'])
+                            #print("sig pairs length is: ", item_len_sig_pairs)
+                            while i_sig_pairs<item_len_sig_pairs:
+                                significant_tukey_pairs=[(gene_list[index_gene], significant_tukey['group1'].iloc[i_sig_pairs]), (gene_list[index_gene], significant_tukey['group2'].iloc[i_sig_pairs])]
+                                
+                                significant_tukey_pairs_list.append(significant_tukey_pairs)
+                                i_sig_pairs+=1
+                        index_gene+=1
+            #print(p_values_tukey)  
+            #print(significant_tukey_pairs_list)
+            
+            #print("Data subcategory 2: ", data_subcategory)
+                       
+            sns_barplot_regulation=sns.barplot(data=data_subcategory_copied, ax=ax_bp, x=First_row_column_shell, y="value", hue="variable", ci="sd", edgecolor="white", capsize=0.1, errcolor = 'black', errwidth=0.8 )
+            annotator=Annotator(sns_barplot_regulation, significant_tukey_pairs_list,data=data_subcategory_copied, x=First_row_column_shell, y="value", hue="variable")
+            annotator.configure(text_format="star", loc="inside")
+            annotator.set_pvalues_and_annotate(p_values_tukey)
+            
+            ax_bp.legend(title='')
+            plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+            plt.title(title_barchart + " (" + list_gene_category[i_gene_category] + ")")
+            plt.xticks(rotation=90)
+            plt.xlabel(x_label_barchart+ " (" + list_gene_category[i_gene_category] + ")")
+            plt.ylabel(y_label_barchart)
+            plt.show()
+            
+            
+            
+            
+            
+            i_gene_category+=1
+            
+        ########## Heat map for different gene category
+        #Heat map for different gene category
+        
+
+        gene_category_list=list(updated_regulation_reset_index[gene_category].unique())
+        gene_category_list.remove(reference_gene)
+
+        i_hm=0
+        item_hm=len(gene_category_list)
+        while i_hm<item_hm:
+            ax_sc_hm=plt.axes()
+            updated_regulation_subcategory=updated_regulation_reset_index[updated_regulation_reset_index[gene_category]==gene_category_list[i_hm]]
+            subcategory_gene_list=list(updated_regulation_subcategory[First_row_column_shell].unique())
+            #print(updated_regulation_subcategory)
+            updated_regulation_subcategory_indexed=updated_regulation_subcategory.set_index([First_row_column_shell, gene_category])
+            print(updated_regulation_subcategory_indexed)
+            heat_map_regulation_subcategory=sns.heatmap(data=updated_regulation_subcategory_indexed, ax=ax_sc_hm, cbar_kws={'label': 'Regulation'}, cmap = "RdBu_r", yticklabels=subcategory_gene_list)
+            ax_sc_hm.set_title(title_heatmap + " ("+ gene_category_list[i_hm] + ")", fontsize = 20)
+            ax_sc_hm.set(xlabel=x_label, ylabel=y_label)
+            plt.show()
+            
+            
+            
+            
+            i_hm+=1
+        
+       
+  
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    data_with_nan=updated_data_fillna_reset_index[updated_data_fillna_reset_index.isna().any(axis=1)]
+    data_with_NaN_exclude_reference_gene=data_with_nan[data_with_nan[gene_category]!= reference_gene]
+    print("For following genes, the gene expression was shut off for atleast one treatment groups.")
+    print(data_with_NaN_exclude_reference_gene)
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    continue_input=input("Type 'y' if you want to analyze next set of data if not type any other key: ")
+    if continue_input=='y':
+        user_input=True
+    else:
+        user_input=False
+    f.close() #close the file. Important.
